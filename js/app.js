@@ -3,7 +3,7 @@
 import { FREE_TALK, SCENARIOS, getScenario } from './scenarios.js';
 import * as store from './storage.js';
 import * as speech from './speech.js';
-import { chatTurn, sessionReview, GeminiError } from './gemini.js';
+import { chatTurn, sessionReview, transcribeAudio, GeminiError } from './gemini.js';
 
 const MOCK = new URLSearchParams(location.search).has('mock');
 
@@ -182,10 +182,10 @@ function startSession(scenarioId) {
   $('chat-scenario-name').textContent = scenario.id === 'free' ? '· 自由会話' : `· ${scenario.title}`;
   $('interim-text').hidden = true;
 
-  // 音声認識非対応ならテキスト入力を初期表示
+  // 音声入力が使えない環境ならテキスト入力を初期表示
   const voiceRow = $('composer-voice');
   const textRow = $('composer-text');
-  if (speech.sttSupported) {
+  if (speech.sttSupported || speech.recorderSupported) {
     voiceRow.hidden = false;
     textRow.hidden = true;
   } else {
@@ -242,6 +242,19 @@ async function sendUserMessage(text) {
 }
 
 // ---- 音声入力 ----
+// stt: ブラウザ標準の音声認識（Android Chrome等で高速）
+// recorder: 録音してGeminiで文字起こし（iOSなど標準認識が不安定な端末向け）
+let micMode = speech.isIOS || !speech.sttSupported ? 'recorder' : 'stt';
+let audioRecorder = null;
+let sttGotResult = false;
+let sttFailCount = 0;
+
+function switchToRecorderMode() {
+  if (micMode === 'recorder' || !speech.recorderSupported) return;
+  micMode = 'recorder';
+  toast('音声認識を録音方式に切り替えました。もう一度話してみてください。');
+}
+
 function setupRecognizer() {
   recognizer = speech.createRecognizer({
     onInterim: (text) => {
@@ -250,6 +263,8 @@ function setupRecognizer() {
       el.hidden = false;
     },
     onResult: (text) => {
+      sttGotResult = true;
+      sttFailCount = 0;
       $('interim-text').hidden = true;
       sendUserMessage(text);
     },
@@ -257,15 +272,31 @@ function setupRecognizer() {
       recording = false;
       updateMicUI();
       $('interim-text').hidden = true;
+      if (!sttGotResult) {
+        sttFailCount++;
+        if (sttFailCount >= 2 && speech.recorderSupported) {
+          switchToRecorderMode();
+        } else {
+          toast('聞き取れませんでした。もう一度はっきり話してみてください。');
+        }
+      }
     },
     onError: (code) => {
       recording = false;
       updateMicUI();
       $('interim-text').hidden = true;
       if (code === 'not-allowed' || code === 'service-not-allowed') {
-        toast('マイクの使用が許可されていません。ブラウザの設定を確認してください。');
-      } else if (code !== 'no-speech' && code !== 'aborted') {
-        toast('音声を聞き取れませんでした。もう一度どうぞ。');
+        toast('マイクの使用が許可されていません。ブラウザの設定でこのサイトのマイクを許可してください。');
+      } else if (code !== 'aborted') {
+        // no-speech / network など: 失敗としてカウントし、続くなら録音方式へ
+        sttFailCount++;
+        if (sttFailCount >= 2 && speech.recorderSupported) {
+          switchToRecorderMode();
+        } else if (code !== 'no-speech') {
+          toast('音声認識でエラーが発生しました。もう一度どうぞ。');
+        } else {
+          toast('聞き取れませんでした。もう一度はっきり話してみてください。');
+        }
       }
     },
   });
@@ -277,7 +308,63 @@ function updateMicUI() {
   $('mic-label').textContent = recording ? '聞いています… タップで確定' : 'タップして話す';
 }
 
+async function toggleRecorder() {
+  if (audioRecorder) {
+    // 録音停止 → 文字起こし
+    const rec = audioRecorder;
+    audioRecorder = null;
+    recording = false;
+    updateMicUI();
+    const blob = await rec.stop();
+    if (blob.size < 1500) {
+      toast('短すぎて聞き取れませんでした。もう少し長く話してみてください。');
+      return;
+    }
+    setStatus('聞き取り中…', 'thinking');
+    $('btn-mic').disabled = true;
+    try {
+      const base64 = await speech.blobToBase64(blob);
+      const text = await transcribeAudio({
+        apiKey: store.getApiKey(),
+        base64,
+        mimeType: rec.mimeType,
+      });
+      if (!text) {
+        setStatus('あなたの番です！', '');
+        toast('聞き取れませんでした。もう一度はっきり話してみてください。');
+        return;
+      }
+      sendUserMessage(text);
+    } catch (err) {
+      setStatus('あなたの番です！', '');
+      toast(err instanceof GeminiError ? err.message : '聞き取りに失敗しました。もう一度どうぞ。');
+    } finally {
+      $('btn-mic').disabled = false;
+    }
+  } else {
+    // 録音開始
+    speech.stopSpeaking();
+    try {
+      audioRecorder = await speech.createAudioRecorder();
+    } catch {
+      toast('マイクを使用できません。ブラウザの設定でこのサイトのマイクを許可してください。');
+      return;
+    }
+    recording = true;
+    updateMicUI();
+  }
+}
+
 function toggleRecording() {
+  if (session && session.busy) return;
+  if (micMode === 'recorder') {
+    if (!speech.recorderSupported) {
+      toast('このブラウザは音声入力に対応していません。キーボードをご利用ください。');
+      return;
+    }
+    toggleRecorder();
+    return;
+  }
   if (!recognizer) setupRecognizer();
   if (!recognizer) {
     toast('このブラウザは音声入力に対応していません。キーボードをご利用ください。');
@@ -287,6 +374,7 @@ function toggleRecording() {
   if (recording) {
     recognizer.stop();
   } else {
+    sttGotResult = false;
     recording = true;
     updateMicUI();
     recognizer.start();
@@ -297,6 +385,11 @@ function toggleRecording() {
 async function endSession() {
   speech.stopSpeaking();
   if (recognizer && recording) recognizer.abort();
+  if (audioRecorder) {
+    audioRecorder.cancel();
+    audioRecorder = null;
+  }
+  recording = false;
 
   const userTurns = session ? session.history.filter((m) => m.role === 'user').length : 0;
   if (!session || userTurns === 0) {
@@ -493,7 +586,7 @@ function wireEvents() {
     $('text-input').focus();
   });
   $('btn-show-mic').addEventListener('click', () => {
-    if (!speech.sttSupported) {
+    if (!speech.sttSupported && !speech.recorderSupported) {
       toast('このブラウザは音声入力に対応していません');
       return;
     }

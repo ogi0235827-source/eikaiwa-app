@@ -1,7 +1,7 @@
 // Service Worker — 静的アセットをキャッシュしてオフライン起動・高速化
 // (Gemini APIへの通信はキャッシュ対象外)
 
-const CACHE = 'eikaiwa-v1';
+const CACHE = 'eikaiwa-v2';
 const ASSETS = [
   '.',
   'index.html',

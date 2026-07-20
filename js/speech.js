@@ -6,6 +6,14 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 export const sttSupported = !!SR;
 export const ttsSupported = 'speechSynthesis' in window;
 
+// iOS判定（iPadOSはMacを名乗るためタッチ点数でも判定）
+export const isIOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+export const recorderSupported =
+  !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+
 // ---- 音声認識 ----
 
 export function createRecognizer({ onInterim, onResult, onEnd, onError }) {
@@ -139,4 +147,63 @@ export function speak(text, { rate = 0.95, voiceName = '', onStart, onEnd } = {}
 
 export function stopSpeaking() {
   if (ttsSupported) speechSynthesis.cancel();
+}
+
+// ---- 録音（SpeechRecognitionが使えない/不安定な端末向け。音声はGeminiで文字起こし） ----
+
+function pickMimeType() {
+  const candidates = [
+    'audio/mp4', // iOS Safari (AAC)
+    'audio/webm;codecs=opus', // Chrome/Edge/Android
+    'audio/webm',
+    'audio/ogg;codecs=opus', // Firefox
+  ];
+  for (const t of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+export async function createAudioRecorder() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mimeType = pickMimeType();
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const chunks = [];
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+  recorder.start();
+
+  const cleanup = () => stream.getTracks().forEach((t) => t.stop());
+
+  return {
+    mimeType: mimeType || 'audio/webm',
+    stop() {
+      return new Promise((resolve) => {
+        recorder.onstop = () => {
+          cleanup();
+          resolve(new Blob(chunks, { type: mimeType || 'audio/webm' }));
+        };
+        recorder.stop();
+      });
+    },
+    cancel() {
+      recorder.onstop = null;
+      try {
+        recorder.stop();
+      } catch {
+        /* noop */
+      }
+      cleanup();
+    },
+  };
+}
+
+export function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }

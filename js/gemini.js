@@ -178,6 +178,29 @@ export async function sessionReview({ apiKey, level, scenario, history }) {
   });
 }
 
+// 録音音声の文字起こし（SpeechRecognition非対応・不安定端末向けフォールバック）
+export async function transcribeAudio({ apiKey, base64, mimeType }) {
+  if (MOCK) {
+    await delay(700);
+    return 'I want to go to the station.';
+  }
+  const data = await callGemini(apiKey, {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { inlineData: { mimeType, data: base64 } },
+          {
+            text: 'Transcribe this English speech exactly as spoken. Return ONLY the transcribed English text, nothing else. If there is no clear speech, return an empty string.',
+          },
+        ],
+      },
+    ],
+    generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: { type: 'OBJECT', properties: { text: { type: 'STRING' } }, required: ['text'] } },
+  });
+  return (data.text || '').trim();
+}
+
 // ---- モック（?mock=1 でのUI確認用） ----
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
