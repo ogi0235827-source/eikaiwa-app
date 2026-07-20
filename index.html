@@ -50,6 +50,7 @@
         📒 復習ノート <span class="notes-count" id="notes-count"></span>
         <span class="ft-arrow">›</span>
       </button>
+      <p class="version-note" id="home-version"></p>
     </div>
   </section>
 
@@ -96,6 +97,11 @@
     </header>
 
     <div class="chat-log" id="chat-log"></div>
+
+    <div class="mic-banner" id="mic-banner" hidden>
+      <span class="mic-banner-text" id="mic-banner-text"></span>
+      <button class="mic-banner-close" id="mic-banner-close" aria-label="閉じる">✕</button>
+    </div>
 
     <div class="composer safe-bottom">
       <div class="interim" id="interim-text" hidden></div>
@@ -172,7 +178,7 @@
       </div>
 
       <button class="primary-btn" id="btn-save-settings">保存</button>
-      <p class="version-note">AI英会話チューター v1.0</p>
+      <p class="version-note" id="settings-version"></p>
     </div>
   </section>
 

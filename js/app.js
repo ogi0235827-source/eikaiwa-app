@@ -5,6 +5,7 @@ import * as store from './storage.js';
 import * as speech from './speech.js';
 import { chatTurn, sessionReview, transcribeAudio, GeminiError } from './gemini.js';
 
+const APP_VERSION = '1.3';
 const MOCK = new URLSearchParams(location.search).has('mock');
 
 const $ = (id) => document.getElementById(id);
@@ -193,7 +194,18 @@ function startSession(scenarioId) {
     textRow.hidden = false;
   }
 
+  hideMicBanner();
   showScreen('screen-chat');
+
+  // マイクがすでにブロック済みなら、最初から案内を出しておく
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions
+      .query({ name: 'microphone' })
+      .then((st) => {
+        if (st.state === 'denied') showMicBanner(micPermissionHelp());
+      })
+      .catch(() => {});
+  }
 
   session.history.push({ role: 'ai', text: scenario.opening });
   addAiBubble(scenario.opening, scenario.openingJa);
@@ -241,6 +253,22 @@ async function sendUserMessage(text) {
   }
 }
 
+// ---- マイク案内バナー（トーストと違い消えないので、対処方法の案内に使う） ----
+function showMicBanner(text) {
+  $('mic-banner-text').textContent = text;
+  $('mic-banner').hidden = false;
+}
+
+function hideMicBanner() {
+  $('mic-banner').hidden = true;
+}
+
+function micPermissionHelp() {
+  return speech.isIOS
+    ? 'マイクがブロックされています。\n【なおし方】アドレスバーの「ぁあ」→「Webサイトの設定」→「マイク」を『許可』にして、ページを再読み込みしてください。\n(出てこない場合: iPhoneの設定アプリ→アプリ→Safari→マイク→許可)'
+    : 'マイクがブロックされています。\n【なおし方】アドレスバー横の鍵マーク🔒→「権限」→「マイク」を『許可』にして、ページを再読み込みしてください。';
+}
+
 // ---- 音声入力 ----
 // stt: ブラウザ標準の音声認識（Android Chrome等で高速）
 // recorder: 録音してGeminiで文字起こし（iOSなど標準認識が不安定な端末向け）
@@ -286,7 +314,7 @@ function setupRecognizer() {
       updateMicUI();
       $('interim-text').hidden = true;
       if (code === 'not-allowed' || code === 'service-not-allowed') {
-        toast('マイクの使用が許可されていません。ブラウザの設定でこのサイトのマイクを許可してください。');
+        showMicBanner(micPermissionHelp());
       } else if (code !== 'aborted') {
         // no-speech / network など: 失敗としてカウントし、続くなら録音方式へ
         sttFailCount++;
@@ -346,12 +374,20 @@ async function toggleRecorder() {
     speech.stopSpeaking();
     try {
       audioRecorder = await speech.createAudioRecorder();
-    } catch {
-      toast('マイクを使用できません。ブラウザの設定でこのサイトのマイクを許可してください。');
+    } catch (err) {
+      if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) {
+        showMicBanner(micPermissionHelp());
+      } else if (err && err.name === 'NotFoundError') {
+        showMicBanner('マイクが見つかりませんでした。端末にマイクがあるか確認してください。');
+      } else {
+        showMicBanner(`マイクを開始できませんでした(${err?.name || 'エラー'})。ページを再読み込みして、もう一度お試しください。`);
+      }
       return;
     }
+    hideMicBanner();
     recording = true;
     updateMicUI();
+    setStatus('🔴 録音中… 話し終えたらもう一度🎤をタップ', '');
   }
 }
 
@@ -378,6 +414,7 @@ function toggleRecording() {
     recording = true;
     updateMicUI();
     recognizer.start();
+    setStatus('🔴 聞いています… 話し終えたらもう一度🎤をタップ', '');
   }
 }
 
@@ -601,6 +638,8 @@ function wireEvents() {
     sendUserMessage(text);
   });
 
+  $('mic-banner-close').addEventListener('click', hideMicBanner);
+
   // ノート・設定
   $('btn-notes-back').addEventListener('click', () => showScreen('screen-home'));
   $('btn-settings-back').addEventListener('click', () => showScreen('screen-home'));
@@ -626,9 +665,19 @@ function init() {
   renderNotesCount();
   setLevelUI();
   wireEvents();
+  $('home-version').textContent = `v${APP_VERSION}`;
+  $('settings-version').textContent = `AI英会話チューター v${APP_VERSION}`;
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // 新しいバージョンが有効になったら自動で読み込み直す（更新の取りこぼし防止）
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded) return;
+      reloaded = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js').then((reg) => reg.update()).catch(() => {});
   }
 }
 

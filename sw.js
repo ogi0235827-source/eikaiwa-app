@@ -1,7 +1,8 @@
-// Service Worker — 静的アセットをキャッシュしてオフライン起動・高速化
-// (Gemini APIへの通信はキャッシュ対象外)
+// Service Worker
+// HTML/JS/CSSはネットワーク優先(常に最新を配信、オフライン時のみキャッシュ)
+// 画像はキャッシュ優先(高速化)
 
-const CACHE = 'eikaiwa-v4';
+const CACHE = 'eikaiwa-v5';
 const ASSETS = [
   '.',
   'index.html',
@@ -34,22 +35,38 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  // 同一オリジンのGETのみキャッシュ運用（APIや外部リクエストは素通し）
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
 
-  // stale-while-revalidate: キャッシュを即返しつつ裏で更新
+  const isStatic = /\.(png|jpg|jpeg|webp|svg|ico|woff2?)$/.test(url.pathname);
+
+  if (isStatic) {
+    // 画像など: キャッシュ優先
+    e.respondWith(
+      caches.match(e.request).then(
+        (cached) =>
+          cached ||
+          fetch(e.request).then((res) => {
+            if (res.ok) {
+              const clone = res.clone();
+              caches.open(CACHE).then((cache) => cache.put(e.request, clone));
+            }
+            return res;
+          }),
+      ),
+    );
+    return;
+  }
+
+  // HTML/JS/CSS/JSON: ネットワーク優先 → 失敗時のみキャッシュ(オフライン対応)
   e.respondWith(
-    caches.match(e.request).then((cached) => {
-      const fetched = fetch(e.request)
-        .then((res) => {
-          if (res.ok) {
-            const clone = res.clone();
-            caches.open(CACHE).then((cache) => cache.put(e.request, clone));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || fetched;
-    }),
+    fetch(e.request)
+      .then((res) => {
+        if (res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(e.request, clone));
+        }
+        return res;
+      })
+      .catch(() => caches.match(e.request)),
   );
 });
