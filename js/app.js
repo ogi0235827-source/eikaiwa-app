@@ -228,7 +228,7 @@ async function sendUserMessage(text) {
     removeTyping();
     setStatus('あなたの番です！', '');
     const message = err instanceof GeminiError ? err.message : 'エラーが発生しました。もう一度試してください。';
-    toast(message);
+    toast(message, 6000);
     if (err instanceof GeminiError && err.code === 'invalid_key') {
       showScreen('screen-settings');
       loadSettingsUI();
@@ -337,7 +337,7 @@ async function toggleRecorder() {
       sendUserMessage(text);
     } catch (err) {
       setStatus('あなたの番です！', '');
-      toast(err instanceof GeminiError ? err.message : '聞き取りに失敗しました。もう一度どうぞ。');
+      toast(err instanceof GeminiError ? err.message : '聞き取りに失敗しました。もう一度どうぞ。', 6000);
     } finally {
       $('btn-mic').disabled = false;
     }

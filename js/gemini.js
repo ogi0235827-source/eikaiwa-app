@@ -94,14 +94,25 @@ async function callGemini(apiKey, body) {
   } catch {
     throw new GeminiError('network', '通信エラー。電波状況を確認してください。');
   }
-  if (res.status === 429) {
-    throw new GeminiError('quota', '今日の無料枠を使い切りました。明日また練習しましょう！');
-  }
-  if (res.status === 400 || res.status === 403) {
-    throw new GeminiError('invalid_key', 'APIキーが正しくないようです。設定画面で確認してください。');
-  }
   if (!res.ok) {
-    throw new GeminiError('bad_response', `AIの応答エラーが発生しました (${res.status})。もう一度試してください。`);
+    let apiMsg = '';
+    try {
+      const errJson = await res.json();
+      apiMsg = errJson?.error?.message || '';
+    } catch {
+      /* 本文なし */
+    }
+    console.error('[Gemini]', res.status, apiMsg);
+    if (res.status === 429) {
+      throw new GeminiError('quota', '今日の無料枠を使い切りました。明日また練習しましょう！');
+    }
+    if (/api key not valid|api_key_invalid|api key expired/i.test(apiMsg)) {
+      throw new GeminiError('invalid_key', 'APIキーが正しくないようです。設定画面でキーを確認してください（前後の空白や写し間違いがないか）。');
+    }
+    if (res.status === 403) {
+      throw new GeminiError('invalid_key', `アクセスが拒否されました。APIキーを確認してください。詳細: ${apiMsg.slice(0, 160)}`);
+    }
+    throw new GeminiError('bad_response', `AIエラー(${res.status}): ${apiMsg.slice(0, 160) || 'もう一度試してください。'}`);
   }
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
