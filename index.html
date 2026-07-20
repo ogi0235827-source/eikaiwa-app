@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e7c6b">
+  <meta name="description" content="AIアバターと英会話練習。話した英語をその場で添削してくれるスマホ学習アプリ">
+  <title>AI英会話チューター</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="assets/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ホーム -->
+  <section class="screen active" id="screen-home">
+    <header class="home-hero">
+      <button class="icon-btn home-settings" id="btn-settings" aria-label="設定">⚙️</button>
+      <div class="hero-avatar-wrap">
+        <img src="assets/avatar.png" alt="エマ先生" class="hero-avatar" id="home-avatar">
+      </div>
+      <div class="hero-bubble">Hi! 今日は何を練習する？</div>
+    </header>
+
+    <div class="home-body">
+      <div class="level-row">
+        <span class="level-label">レベル</span>
+        <div class="segmented" id="level-toggle" role="radiogroup" aria-label="レベル選択">
+          <button class="seg-btn active" data-level="beginner">初級</button>
+          <button class="seg-btn" data-level="intermediate">中級</button>
+        </div>
+      </div>
+
+      <button class="free-talk-card" id="btn-free-talk">
+        <span class="ft-emoji">💬</span>
+        <span class="ft-text">
+          <span class="ft-title">自由会話をはじめる</span>
+          <span class="ft-sub">好きな話題でエマとおしゃべり</span>
+        </span>
+        <span class="ft-arrow">›</span>
+      </button>
+
+      <h2 class="section-title">シーン別ロールプレイ</h2>
+      <div class="scenario-grid" id="scenario-grid"><!-- JSで生成 --></div>
+
+      <button class="notes-link" id="btn-notes">
+        📒 復習ノート <span class="notes-count" id="notes-count"></span>
+        <span class="ft-arrow">›</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- APIキー設定ガイド（オンボーディング） -->
+  <section class="screen" id="screen-keyguide">
+    <header class="appbar">
+      <button class="icon-btn" id="btn-keyguide-back" aria-label="戻る">‹</button>
+      <h1>はじめの設定</h1>
+      <span class="appbar-spacer"></span>
+    </header>
+    <div class="pad-body">
+      <div class="guide-intro">
+        <img src="assets/avatar.png" alt="" class="guide-avatar">
+        <p>会話AIを使うために、Googleの<strong>無料APIキー</strong>を1回だけ設定します。約2分で完了します。料金はかかりません。</p>
+      </div>
+      <ol class="guide-steps">
+        <li><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio<span class="ext">↗</span></a> を開き、Googleアカウントでログイン</li>
+        <li>「<strong>APIキーを作成</strong>（Create API key）」をタップ</li>
+        <li>表示されたキー（AIza… で始まる文字列）を<strong>コピー</strong></li>
+        <li>下の欄に<strong>貼り付けて保存</strong></li>
+      </ol>
+      <div class="field">
+        <label for="keyguide-input">APIキー</label>
+        <input type="password" id="keyguide-input" placeholder="AIza..." autocomplete="off">
+      </div>
+      <button class="primary-btn" id="btn-keyguide-save">保存してはじめる</button>
+      <p class="guide-note">キーはこの端末の中だけに保存され、外部に送信されるのはGoogleのAIサーバーへの通信のみです。</p>
+    </div>
+  </section>
+
+  <!-- 会話画面 -->
+  <section class="screen" id="screen-chat">
+    <header class="chat-header">
+      <button class="icon-btn" id="btn-chat-back" aria-label="戻る">‹</button>
+      <div class="chat-avatar-wrap" id="chat-avatar-wrap">
+        <img src="assets/avatar.png" alt="エマ先生" class="chat-avatar">
+        <span class="speak-ring"></span>
+      </div>
+      <div class="chat-title">
+        <div class="chat-name">Emma <span class="chat-scenario" id="chat-scenario-name"></span></div>
+        <div class="chat-status" id="chat-status">待機中</div>
+      </div>
+      <button class="end-btn" id="btn-end-session">終了</button>
+    </header>
+
+    <div class="chat-log" id="chat-log"></div>
+
+    <div class="composer safe-bottom">
+      <div class="interim" id="interim-text" hidden></div>
+      <div class="composer-row" id="composer-voice">
+        <button class="icon-btn composer-side" id="btn-show-keyboard" aria-label="キーボード入力">⌨️</button>
+        <button class="mic-btn" id="btn-mic" aria-label="話す">
+          <span class="mic-icon">🎤</span>
+          <span class="mic-label" id="mic-label">タップして話す</span>
+        </button>
+        <button class="icon-btn composer-side" id="btn-stop-speak" aria-label="読み上げ停止">🔇</button>
+      </div>
+      <form class="composer-row text-row" id="composer-text" hidden>
+        <button type="button" class="icon-btn composer-side" id="btn-show-mic" aria-label="音声入力">🎤</button>
+        <input type="text" id="text-input" placeholder="英語で入力..." autocomplete="off" autocapitalize="sentences">
+        <button type="submit" class="send-btn" id="btn-send" aria-label="送信">➤</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- セッションレビュー -->
+  <section class="screen" id="screen-review">
+    <header class="appbar">
+      <span class="appbar-spacer"></span>
+      <h1>今日のふりかえり</h1>
+      <span class="appbar-spacer"></span>
+    </header>
+    <div class="pad-body" id="review-body"><!-- JSで生成 --></div>
+  </section>
+
+  <!-- 復習ノート -->
+  <section class="screen" id="screen-notes">
+    <header class="appbar">
+      <button class="icon-btn" id="btn-notes-back" aria-label="戻る">‹</button>
+      <h1>復習ノート</h1>
+      <span class="appbar-spacer"></span>
+    </header>
+    <div class="pad-body" id="notes-body"><!-- JSで生成 --></div>
+  </section>
+
+  <!-- 設定 -->
+  <section class="screen" id="screen-settings">
+    <header class="appbar">
+      <button class="icon-btn" id="btn-settings-back" aria-label="戻る">‹</button>
+      <h1>設定</h1>
+      <span class="appbar-spacer"></span>
+    </header>
+    <div class="pad-body">
+      <div class="field">
+        <label for="setting-api-key">Gemini APIキー</label>
+        <div class="key-row">
+          <input type="password" id="setting-api-key" placeholder="AIza..." autocomplete="off">
+          <button class="icon-btn" id="btn-toggle-key" aria-label="表示切替">👁</button>
+        </div>
+        <p class="field-note"><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studioで無料取得<span class="ext">↗</span></a></p>
+      </div>
+
+      <div class="field">
+        <label for="setting-rate">読み上げ速度 <span id="rate-value"></span></label>
+        <input type="range" id="setting-rate" min="0.6" max="1.3" step="0.05">
+      </div>
+
+      <div class="field">
+        <label for="setting-voice">声の種類</label>
+        <select id="setting-voice"><option value="">自動選択</option></select>
+      </div>
+
+      <div class="field">
+        <label>添削の細かさ</label>
+        <div class="segmented" id="feedback-toggle">
+          <button class="seg-btn" data-detail="thorough">しっかり</button>
+          <button class="seg-btn" data-detail="light">軽め</button>
+        </div>
+        <p class="field-note">「しっかり」は不自然な言い回しも指摘。「軽め」は明確な間違いのみ。</p>
+      </div>
+
+      <button class="primary-btn" id="btn-save-settings">保存</button>
+      <p class="version-note">AI英会話チューター v1.0</p>
+    </div>
+  </section>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
