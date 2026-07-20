@@ -1,7 +1,86 @@
 // Gemini API 呼び出し（会話+添削を1リクエストでJSON取得）
 
-const MODEL = 'gemini-2.5-flash';
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const MODEL_STORE_KEY = 'eikaiwa.model';
+
+// 利用可能なモデルはGoogle側で入れ替わるため、固定名にせず一覧APIから自動選択する
+let modelCache = null;
+
+function scoreModel(m) {
+  const name = (m.name || '').replace(/^models\//, '');
+  const lower = name.toLowerCase();
+  // テキスト会話に使えないモデルは除外
+  if (/(embedding|imagen|veo|tts|audio|live|image|robotics|aqa|gemma)/.test(lower)) return -1;
+  const methods = m.supportedGenerationMethods || m.supportedActions || [];
+  if (methods.length && !methods.includes('generateContent')) return -1;
+  if (!/gemini/.test(lower)) return -1;
+
+  let score = 0;
+  const ver = lower.match(/gemini-(\d+(?:\.\d+)?)/);
+  if (ver) score += parseFloat(ver[1]) * 10; // 新しい世代を優先
+  if (lower.includes('flash')) score += 100; // 無料枠が広く高速なflash系を最優先
+  if (lower.includes('lite')) score -= 20;
+  if (/(preview|exp)/.test(lower)) score -= 30; // 安定版を優先
+  if (lower.includes('pro')) score += 50;
+  return score;
+}
+
+async function discoverModel(apiKey) {
+  let res;
+  try {
+    res = await fetch(`${BASE}?key=${encodeURIComponent(apiKey)}&pageSize=200`);
+  } catch {
+    throw new GeminiError('network', '通信エラー。電波状況を確認してください。');
+  }
+  if (!res.ok) {
+    let apiMsg = '';
+    try {
+      apiMsg = (await res.json())?.error?.message || '';
+    } catch {
+      /* noop */
+    }
+    if (/api key not valid|api_key_invalid|api key expired/i.test(apiMsg) || res.status === 403 || res.status === 400) {
+      throw new GeminiError('invalid_key', 'APIキーが正しくないようです。設定画面でキーを確認してください。');
+    }
+    throw new GeminiError('bad_response', `AIモデル一覧の取得に失敗しました(${res.status})。`);
+  }
+  const data = await res.json();
+  const models = (data.models || [])
+    .map((m) => ({ name: (m.name || '').replace(/^models\//, ''), score: scoreModel(m) }))
+    .filter((m) => m.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  if (!models.length) {
+    throw new GeminiError('bad_response', '利用できるAIモデルが見つかりませんでした。');
+  }
+  const chosen = models[0].name;
+  console.info('[Gemini] model selected:', chosen);
+  modelCache = chosen;
+  try {
+    localStorage.setItem(MODEL_STORE_KEY, chosen);
+  } catch {
+    /* noop */
+  }
+  return chosen;
+}
+
+async function resolveModel(apiKey) {
+  if (modelCache) return modelCache;
+  const stored = localStorage.getItem(MODEL_STORE_KEY);
+  if (stored) {
+    modelCache = stored;
+    return stored;
+  }
+  return discoverModel(apiKey);
+}
+
+function clearModelCache() {
+  modelCache = null;
+  try {
+    localStorage.removeItem(MODEL_STORE_KEY);
+  } catch {
+    /* noop */
+  }
+}
 
 // URLに ?mock=1 を付けるとAPIを呼ばずダミー応答で動く（UI確認用）
 const MOCK = new URLSearchParams(location.search).has('mock');
@@ -83,16 +162,27 @@ const REVIEW_SCHEMA = {
   required: ['good_points', 'mistakes', 'key_phrases', 'encouragement_ja'],
 };
 
-async function callGemini(apiKey, body) {
-  let res;
+async function postGenerate(apiKey, model, body) {
   try {
-    res = await fetch(`${BASE}/${MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    return await fetch(`${BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
   } catch {
     throw new GeminiError('network', '通信エラー。電波状況を確認してください。');
+  }
+}
+
+async function callGemini(apiKey, body) {
+  let model = await resolveModel(apiKey);
+  let res = await postGenerate(apiKey, model, body);
+
+  // 404 = そのモデルが廃止/変更された → 一覧から選び直して1回だけリトライ
+  if (res.status === 404) {
+    clearModelCache();
+    model = await discoverModel(apiKey);
+    res = await postGenerate(apiKey, model, body);
   }
   if (!res.ok) {
     let apiMsg = '';
