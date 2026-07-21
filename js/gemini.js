@@ -107,6 +107,7 @@ function feedbackInstruction(detail) {
 const CHAT_SCHEMA = {
   type: 'OBJECT',
   properties: {
+    transcript: { type: 'STRING' },
     reply: { type: 'STRING' },
     feedback: {
       type: 'OBJECT',
@@ -224,8 +225,10 @@ function toContents(history) {
   }));
 }
 
-export async function chatTurn({ apiKey, level, feedbackDetail, scenario, history }) {
-  if (MOCK) return mockChatTurn(history);
+// audio: {base64, mimeType} を渡すと、最後のユーザー発話として録音を直接理解させる
+// （文字起こし+返答+添削を1リクエストで行い、待ち時間を半減する）
+export async function chatTurn({ apiKey, level, feedbackDetail, scenario, history, audio }) {
+  if (MOCK) return mockChatTurn(history, audio);
 
   const system = [
     'You are "Emma", a warm and encouraging English conversation tutor in a language learning app for Japanese learners.',
@@ -237,11 +240,24 @@ export async function chatTurn({ apiKey, level, feedbackDetail, scenario, histor
     'If there are issues: has_issues=true, "corrected" = the corrected version of their sentence, "points" = each issue with type (one of: 文法 / 語彙 / 自然さ) and a concise Japanese explanation (ja_explanation), and "natural_alternative" = how a native speaker would naturally say it.',
     'If the message is fine: has_issues=false, and set "praise_ja" to a short Japanese praise comment. You may still set "natural_alternative" if there is a more natural phrasing worth learning.',
     'All explanations (ja_explanation, praise_ja) must be in Japanese. "reply", "corrected", "natural_alternative" must be in English.',
-  ].join('\n');
+  ];
+  if (audio) {
+    system.push(
+      'AUDIO INPUT: The learner\'s last message is an audio recording of their spoken English. First transcribe it exactly as spoken into "transcript" (English text only). Then treat that transcript as their message: reply to it and give feedback on it. If the audio contains no clear speech, set "transcript" to an empty string and leave the other fields minimal.',
+    );
+  }
+
+  const contents = toContents(history);
+  if (audio) {
+    contents.push({
+      role: 'user',
+      parts: [{ inlineData: { mimeType: audio.mimeType, data: audio.base64 } }],
+    });
+  }
 
   return callGemini(apiKey, {
-    systemInstruction: { parts: [{ text: system }] },
-    contents: toContents(history),
+    systemInstruction: { parts: [{ text: system.join('\n') }] },
+    contents,
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: CHAT_SCHEMA,
@@ -279,35 +295,23 @@ export async function sessionReview({ apiKey, level, scenario, history }) {
   });
 }
 
-// 録音音声の文字起こし（SpeechRecognition非対応・不安定端末向けフォールバック）
-export async function transcribeAudio({ apiKey, base64, mimeType }) {
-  if (MOCK) {
-    await delay(700);
-    return 'I want to go to the station.';
-  }
-  const data = await callGemini(apiKey, {
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType, data: base64 } },
-          {
-            text: 'Transcribe this English speech exactly as spoken. Return ONLY the transcribed English text, nothing else. If there is no clear speech, return an empty string.',
-          },
-        ],
-      },
-    ],
-    generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: { type: 'OBJECT', properties: { text: { type: 'STRING' } }, required: ['text'] } },
-  });
-  return (data.text || '').trim();
-}
-
 // ---- モック（?mock=1 でのUI確認用） ----
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function mockChatTurn(history) {
+async function mockChatTurn(history, audio) {
   await delay(900);
+  if (audio) {
+    return {
+      transcript: 'I want to go to the station.',
+      reply: 'Sure! The station is just around the corner. Are you taking the train downtown?',
+      feedback: {
+        has_issues: false,
+        praise_ja: '伝わる言い方です！',
+        natural_alternative: 'Could you tell me how to get to the station?',
+      },
+    };
+  }
   const n = history.filter((m) => m.role === 'user').length;
   if (n % 2 === 1) {
     return {

@@ -3,9 +3,9 @@
 import { FREE_TALK, SCENARIOS, getScenario } from './scenarios.js';
 import * as store from './storage.js';
 import * as speech from './speech.js';
-import { chatTurn, sessionReview, transcribeAudio, GeminiError } from './gemini.js';
+import { chatTurn, sessionReview, GeminiError } from './gemini.js';
 
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.4';
 const MOCK = new URLSearchParams(location.search).has('mock');
 
 const $ = (id) => document.getElementById(id);
@@ -336,39 +336,65 @@ function updateMicUI() {
   $('mic-label').textContent = recording ? '聞いています… タップで確定' : 'タップして話す';
 }
 
+// 録音をそのままAIへ渡し、文字起こし+返答+添削を1リクエストで受け取る（高速化）
+async function sendUserAudio(blob, mimeType) {
+  if (!session || session.busy) return;
+  session.busy = true;
+  $('btn-mic').disabled = true;
+
+  const userMsg = addUserBubble('🎤 …');
+  setStatus('聞き取って返事を考えています…', 'thinking');
+  addTyping();
+
+  try {
+    const base64 = await speech.blobToBase64(blob);
+    const result = await chatTurn({
+      apiKey: store.getApiKey(),
+      level: settings.level,
+      feedbackDetail: settings.feedbackDetail,
+      scenario: session.scenario,
+      history: session.history,
+      audio: { base64, mimeType },
+    });
+    const transcript = (result.transcript || '').trim();
+    removeTyping();
+    if (!transcript) {
+      userMsg.remove();
+      setStatus('あなたの番です！', '');
+      toast('聞き取れませんでした。もう一度はっきり話してみてください。');
+      return;
+    }
+    userMsg.querySelector('.bubble').textContent = transcript;
+    session.history.push({ role: 'user', text: transcript });
+    session.history.push({ role: 'ai', text: result.reply });
+    addAiBubble(result.reply);
+    attachFeedback(userMsg, result.feedback);
+    speakAndAnimate(result.reply);
+  } catch (err) {
+    removeTyping();
+    userMsg.remove();
+    setStatus('あなたの番です！', '');
+    toast(err instanceof GeminiError ? err.message : '聞き取りに失敗しました。もう一度どうぞ。', 6000);
+  } finally {
+    session.busy = false;
+    $('btn-mic').disabled = false;
+  }
+}
+
 async function toggleRecorder() {
   if (audioRecorder) {
-    // 録音停止 → 文字起こし
+    // 録音停止 → そのままAIへ
     const rec = audioRecorder;
     audioRecorder = null;
     recording = false;
     updateMicUI();
     const blob = await rec.stop();
     if (blob.size < 1500) {
+      setStatus('あなたの番です！', '');
       toast('短すぎて聞き取れませんでした。もう少し長く話してみてください。');
       return;
     }
-    setStatus('聞き取り中…', 'thinking');
-    $('btn-mic').disabled = true;
-    try {
-      const base64 = await speech.blobToBase64(blob);
-      const text = await transcribeAudio({
-        apiKey: store.getApiKey(),
-        base64,
-        mimeType: rec.mimeType,
-      });
-      if (!text) {
-        setStatus('あなたの番です！', '');
-        toast('聞き取れませんでした。もう一度はっきり話してみてください。');
-        return;
-      }
-      sendUserMessage(text);
-    } catch (err) {
-      setStatus('あなたの番です！', '');
-      toast(err instanceof GeminiError ? err.message : '聞き取りに失敗しました。もう一度どうぞ。', 6000);
-    } finally {
-      $('btn-mic').disabled = false;
-    }
+    sendUserAudio(blob, rec.mimeType);
   } else {
     // 録音開始
     speech.stopSpeaking();
