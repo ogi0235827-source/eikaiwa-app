@@ -5,7 +5,7 @@ import * as store from './storage.js';
 import * as speech from './speech.js';
 import { chatTurn, sessionReview, GeminiError } from './gemini.js';
 
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.5';
 const MOCK = new URLSearchParams(location.search).has('mock');
 
 const $ = (id) => document.getElementById(id);

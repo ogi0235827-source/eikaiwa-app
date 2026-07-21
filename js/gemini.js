@@ -1,10 +1,12 @@
 // Gemini API 呼び出し（会話+添削を1リクエストでJSON取得）
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const MODEL_STORE_KEY = 'eikaiwa.model';
+const MODELS_STORE_KEY = 'eikaiwa.models';
+const THINK_STORE_KEY = 'eikaiwa.thinkcfg';
 
 // 利用可能なモデルはGoogle側で入れ替わるため、固定名にせず一覧APIから自動選択する
-let modelCache = null;
+// 混雑(503)に備えて上位候補を複数保持し、自動で切り替える
+let modelsCache = null;
 
 function scoreModel(m) {
   const name = (m.name || '').replace(/^models\//, '');
@@ -19,7 +21,7 @@ function scoreModel(m) {
   const ver = lower.match(/gemini-(\d+(?:\.\d+)?)/);
   if (ver) score += parseFloat(ver[1]) * 10; // 新しい世代を優先
   if (lower.includes('flash')) score += 100; // 無料枠が広く高速なflash系を最優先
-  if (lower.includes('lite')) score -= 20;
+  if (lower.includes('lite')) score += 8; // 同世代ならより高速で混雑しにくいliteを優先
   if (/(preview|exp)/.test(lower)) score -= 30; // 安定版を優先
   if (lower.includes('pro')) score += 50;
   return score;
@@ -45,38 +47,43 @@ async function discoverModel(apiKey) {
     throw new GeminiError('bad_response', `AIモデル一覧の取得に失敗しました(${res.status})。`);
   }
   const data = await res.json();
-  const models = (data.models || [])
+  const ranked = (data.models || [])
     .map((m) => ({ name: (m.name || '').replace(/^models\//, ''), score: scoreModel(m) }))
     .filter((m) => m.score >= 0)
-    .sort((a, b) => b.score - a.score);
-  if (!models.length) {
+    .sort((a, b) => b.score - a.score)
+    .map((m) => m.name)
+    .slice(0, 4);
+  if (!ranked.length) {
     throw new GeminiError('bad_response', '利用できるAIモデルが見つかりませんでした。');
   }
-  const chosen = models[0].name;
-  console.info('[Gemini] model selected:', chosen);
-  modelCache = chosen;
+  console.info('[Gemini] models selected:', ranked.join(', '));
+  modelsCache = ranked;
   try {
-    localStorage.setItem(MODEL_STORE_KEY, chosen);
+    localStorage.setItem(MODELS_STORE_KEY, JSON.stringify(ranked));
   } catch {
     /* noop */
   }
-  return chosen;
+  return ranked;
 }
 
-async function resolveModel(apiKey) {
-  if (modelCache) return modelCache;
-  const stored = localStorage.getItem(MODEL_STORE_KEY);
-  if (stored) {
-    modelCache = stored;
-    return stored;
+async function resolveModels(apiKey) {
+  if (modelsCache) return modelsCache;
+  try {
+    const stored = JSON.parse(localStorage.getItem(MODELS_STORE_KEY) || 'null');
+    if (Array.isArray(stored) && stored.length) {
+      modelsCache = stored;
+      return stored;
+    }
+  } catch {
+    /* noop */
   }
   return discoverModel(apiKey);
 }
 
 function clearModelCache() {
-  modelCache = null;
+  modelsCache = null;
   try {
-    localStorage.removeItem(MODEL_STORE_KEY);
+    localStorage.removeItem(MODELS_STORE_KEY);
   } catch {
     /* noop */
   }
@@ -176,24 +183,73 @@ async function postGenerate(apiKey, model, body) {
 }
 
 async function callGemini(apiKey, body) {
-  let model = await resolveModel(apiKey);
-  let res = await postGenerate(apiKey, model, body);
+  let models = await resolveModels(apiKey);
+  let mi = 0; // 現在試しているモデルの候補番号
+  // 「思考モード」オフ指定で応答を高速化（未対応モデルでは400になるため自動で外して記憶）
+  let sendThinkOff = localStorage.getItem(THINK_STORE_KEY) !== 'unsupported';
+  let rediscovered = false;
+  let retried503 = false;
 
-  // 404 = そのモデルが廃止/変更された → 一覧から選び直して1回だけリトライ
-  if (res.status === 404) {
-    clearModelCache();
-    model = await discoverModel(apiKey);
-    res = await postGenerate(apiKey, model, body);
-  }
-  if (!res.ok) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const model = models[Math.min(mi, models.length - 1)];
+    const finalBody = sendThinkOff
+      ? { ...body, generationConfig: { ...body.generationConfig, thinkingConfig: { thinkingBudget: 0 } } }
+      : body;
+    const res = await postGenerate(apiKey, model, finalBody);
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) {
+        throw new GeminiError('bad_response', 'AIの応答を読み取れませんでした。もう一度試してください。');
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new GeminiError('bad_response', 'AIの応答を読み取れませんでした。もう一度試してください。');
+      }
+    }
+
     let apiMsg = '';
     try {
-      const errJson = await res.json();
-      apiMsg = errJson?.error?.message || '';
+      apiMsg = (await res.json())?.error?.message || '';
     } catch {
       /* 本文なし */
     }
-    console.error('[Gemini]', res.status, apiMsg);
+    console.error('[Gemini]', model, res.status, apiMsg);
+
+    // モデル廃止 → 一覧を取り直して先頭からやり直し（1回だけ）
+    if (res.status === 404 && !rediscovered) {
+      rediscovered = true;
+      clearModelCache();
+      models = await discoverModel(apiKey);
+      mi = 0;
+      continue;
+    }
+    // 思考モード指定が未対応 → 外して再試行し、以後は送らない
+    if (res.status === 400 && sendThinkOff && /think|budget/i.test(apiMsg)) {
+      sendThinkOff = false;
+      try {
+        localStorage.setItem(THINK_STORE_KEY, 'unsupported');
+      } catch {
+        /* noop */
+      }
+      continue;
+    }
+    // 混雑 → 少し待って再試行 → まだ混雑なら次の候補モデルへ自動切替
+    if (res.status === 503 || res.status === 500) {
+      if (!retried503) {
+        retried503 = true;
+        await delay(800);
+        continue;
+      }
+      if (mi < models.length - 1) {
+        mi++;
+        retried503 = false;
+        continue;
+      }
+      throw new GeminiError('bad_response', 'AIが混み合っています。少し時間をおいてもう一度お試しください。');
+    }
     if (res.status === 429) {
       throw new GeminiError('quota', '今日の無料枠を使い切りました。明日また練習しましょう！');
     }
@@ -205,16 +261,7 @@ async function callGemini(apiKey, body) {
     }
     throw new GeminiError('bad_response', `AIエラー(${res.status}): ${apiMsg.slice(0, 160) || 'もう一度試してください。'}`);
   }
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new GeminiError('bad_response', 'AIの応答を読み取れませんでした。もう一度試してください。');
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new GeminiError('bad_response', 'AIの応答を読み取れませんでした。もう一度試してください。');
-  }
+  throw new GeminiError('bad_response', 'AIが混み合っています。少し時間をおいてもう一度お試しください。');
 }
 
 // 会話履歴 [{role:'user'|'ai', text}] をGemini形式に変換
