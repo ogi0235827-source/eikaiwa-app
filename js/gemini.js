@@ -226,14 +226,19 @@ async function callGemini(apiKey, body) {
       mi = 0;
       continue;
     }
-    // 思考モード指定が未対応 → 外して再試行し、以後は送らない
-    if (res.status === 400 && sendThinkOff && /think|budget/i.test(apiMsg)) {
+    // 400: まず思考オフ指定が原因かもしれないので外して再試行（文言に依存しない）
+    if (res.status === 400 && sendThinkOff) {
       sendThinkOff = false;
       try {
         localStorage.setItem(THINK_STORE_KEY, 'unsupported');
       } catch {
         /* noop */
       }
+      continue;
+    }
+    // 400が続く: そのモデルがこのリクエスト形式を受け付けない → 次の候補モデルへ
+    if (res.status === 400 && mi < models.length - 1) {
+      mi++;
       continue;
     }
     // 混雑 → 少し待って再試行 → まだ混雑なら次の候補モデルへ自動切替
