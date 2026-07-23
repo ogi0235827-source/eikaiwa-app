@@ -264,7 +264,7 @@ async function callGemini(apiKey, body) {
     if (res.status === 403) {
       throw new GeminiError('invalid_key', `アクセスが拒否されました。APIキーを確認してください。詳細: ${apiMsg.slice(0, 160)}`);
     }
-    throw new GeminiError('bad_response', `AIエラー(${res.status}): ${apiMsg.slice(0, 160) || 'もう一度試してください。'}`);
+    throw new GeminiError('bad_response', `AIエラー(${res.status}): ${apiMsg || 'もう一度試してください。'}`);
   }
   throw new GeminiError('bad_response', 'AIが混み合っています。少し時間をおいてもう一度お試しください。');
 }

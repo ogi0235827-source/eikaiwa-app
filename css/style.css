@@ -296,7 +296,7 @@ a { color: var(--brand); }
   padding: 12px 14px; font-size: 13px; line-height: 1.6;
   border-top: 1px solid var(--border);
 }
-.mic-banner-text { flex: 1; white-space: pre-line; }
+.mic-banner-text { flex: 1; white-space: pre-line; -webkit-user-select: text; user-select: text; }
 .mic-banner-close { font-size: 14px; color: var(--text-sub); padding: 2px 6px; flex-shrink: 0; }
 
 /* コンポーザー */

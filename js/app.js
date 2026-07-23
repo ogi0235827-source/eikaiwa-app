@@ -5,7 +5,7 @@ import * as store from './storage.js';
 import * as speech from './speech.js';
 import { chatTurn, sessionReview, GeminiError } from './gemini.js';
 
-const APP_VERSION = '1.6';
+const APP_VERSION = '1.7';
 const MOCK = new URLSearchParams(location.search).has('mock');
 
 const $ = (id) => document.getElementById(id);
@@ -218,6 +218,7 @@ async function sendUserMessage(text) {
   session.busy = true;
   $('btn-mic').disabled = true;
 
+  hideMicBanner();
   const userMsg = addUserBubble(clean);
   session.history.push({ role: 'user', text: clean });
   setStatus('考えています…', 'thinking');
@@ -239,8 +240,9 @@ async function sendUserMessage(text) {
   } catch (err) {
     removeTyping();
     setStatus('あなたの番です！', '');
-    const message = err instanceof GeminiError ? err.message : 'エラーが発生しました。もう一度試してください。';
-    toast(message, 6000);
+    const message = err instanceof GeminiError ? err.message : `エラー: ${err?.message || err}`;
+    // エラーは消えないバナーに全文表示（原因の切り分けができるように）
+    showMicBanner(message);
     if (err instanceof GeminiError && err.code === 'invalid_key') {
       showScreen('screen-settings');
       loadSettingsUI();
@@ -253,7 +255,7 @@ async function sendUserMessage(text) {
   }
 }
 
-// ---- マイク案内バナー（トーストと違い消えないので、対処方法の案内に使う） ----
+// ---- 会話画面の常設バナー（トーストと違い消えないので、対処法やエラー全文の表示に使う） ----
 function showMicBanner(text) {
   $('mic-banner-text').textContent = text;
   $('mic-banner').hidden = false;
@@ -342,6 +344,7 @@ async function sendUserAudio(blob, mimeType) {
   session.busy = true;
   $('btn-mic').disabled = true;
 
+  hideMicBanner();
   const userMsg = addUserBubble('🎤 …');
   setStatus('聞き取って返事を考えています…', 'thinking');
   addTyping();
@@ -374,7 +377,7 @@ async function sendUserAudio(blob, mimeType) {
     removeTyping();
     userMsg.remove();
     setStatus('あなたの番です！', '');
-    toast(err instanceof GeminiError ? err.message : '聞き取りに失敗しました。もう一度どうぞ。', 6000);
+    showMicBanner(err instanceof GeminiError ? err.message : `エラー: ${err?.message || err}`);
   } finally {
     session.busy = false;
     $('btn-mic').disabled = false;

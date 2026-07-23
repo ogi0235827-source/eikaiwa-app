@@ -2,7 +2,7 @@
 // HTML/JS/CSSはネットワーク優先(常に最新を配信、オフライン時のみキャッシュ)
 // 画像はキャッシュ優先(高速化)
 
-const CACHE = 'eikaiwa-v8';
+const CACHE = 'eikaiwa-v9';
 const ASSETS = [
   '.',
   'index.html',
