@@ -5,7 +5,7 @@ import * as store from './storage.js';
 import * as speech from './speech.js';
 import { chatTurn, sessionReview, GeminiError } from './gemini.js';
 
-const APP_VERSION = '1.7';
+const APP_VERSION = '1.8';
 const MOCK = new URLSearchParams(location.search).has('mock');
 
 const $ = (id) => document.getElementById(id);
@@ -350,14 +350,20 @@ async function sendUserAudio(blob, mimeType) {
   addTyping();
 
   try {
-    const base64 = await speech.blobToBase64(blob);
+    // 録音はGeminiが受け付けるWAVに変換して送る（webm/mp4は非対応）
+    let audioPayload;
+    try {
+      audioPayload = await speech.blobToWavBase64(blob);
+    } catch {
+      audioPayload = { base64: await speech.blobToBase64(blob), mimeType };
+    }
     const result = await chatTurn({
       apiKey: store.getApiKey(),
       level: settings.level,
       feedbackDetail: settings.feedbackDetail,
       scenario: session.scenario,
       history: session.history,
-      audio: { base64, mimeType },
+      audio: audioPayload,
     });
     const transcript = (result.transcript || '').trim();
     removeTyping();

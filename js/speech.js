@@ -207,3 +207,73 @@ export function blobToBase64(blob) {
     reader.readAsDataURL(blob);
   });
 }
+
+// 録音(webm/mp4/ogg)はGeminiのinlineDataが受け付けないため、
+// Web Audio APIでデコードしてmono/16kHzのWAV(PCM16)に変換する。
+// Geminiはaudio/wavを確実に受け付ける。
+function writeStr(view, offset, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+function encodeWav(audioBuffer, targetRate) {
+  const numCh = audioBuffer.numberOfChannels;
+  const srcLen = audioBuffer.length;
+  const srcRate = audioBuffer.sampleRate;
+
+  // モノラルにダウンミックス
+  const mono = new Float32Array(srcLen);
+  for (let c = 0; c < numCh; c++) {
+    const data = audioBuffer.getChannelData(c);
+    for (let i = 0; i < srcLen; i++) mono[i] += data[i] / numCh;
+  }
+
+  // 16kHzへ線形リサンプル(音声認識には十分・軽量)
+  const ratio = targetRate / srcRate;
+  const outLen = Math.max(1, Math.round(srcLen * ratio));
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const idx = i / ratio;
+    const i0 = Math.floor(idx);
+    const i1 = Math.min(i0 + 1, srcLen - 1);
+    const f = idx - i0;
+    out[i] = mono[i0] * (1 - f) + mono[i1] * f;
+  }
+
+  const buffer = new ArrayBuffer(44 + outLen * 2);
+  const view = new DataView(buffer);
+  writeStr(view, 0, 'RIFF');
+  view.setUint32(4, 36 + outLen * 2, true);
+  writeStr(view, 8, 'WAVE');
+  writeStr(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, targetRate, true);
+  view.setUint32(28, targetRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(view, 36, 'data');
+  view.setUint32(40, outLen * 2, true);
+  let off = 44;
+  for (let i = 0; i < outLen; i++) {
+    const s = Math.max(-1, Math.min(1, out[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    off += 2;
+  }
+  return buffer;
+}
+
+export async function blobToWavBase64(blob) {
+  const arrayBuf = await blob.arrayBuffer();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) throw new Error('no AudioContext');
+  const ctx = new Ctx();
+  try {
+    const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+    const wav = encodeWav(audioBuffer, 16000);
+    const base64 = await blobToBase64(new Blob([wav]));
+    return { base64, mimeType: 'audio/wav' };
+  } finally {
+    if (ctx.close) ctx.close();
+  }
+}
